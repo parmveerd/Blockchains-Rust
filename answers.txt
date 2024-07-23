@@ -1,0 +1,5 @@
+1. The type Output is specified as Send because it shows that the associated output of the Task can be moved between threads. Send makes sure that the type can be safely shared between threads and does not have any race conditions. Send means that Task can now allow the output type to be sent between threads safely.
+
+2. When .iter() is used to iterate over elements, each element in the collection is borrowed and must return a borrowed reference. So, if .iter() is used instead of .drain(), the references to the workers would be borrowed and we would not be able to call .join() because it needs ownership. Unlike, .iter(), .drain() transfers ownership of the elements in the vector.
+
+3. The block is cloned because this ensures that the data is owned by the Arc. For Arc<&Block>, the reference would be to the Block and not the actual data. This can lead to problems such as the Block potentially being dropped, while the reference is used in a different thread. Cloning makes sure the data is always valid as long as there are references attached to it. Thus, Arc<&Block> would not guarantee the same security as cloning.

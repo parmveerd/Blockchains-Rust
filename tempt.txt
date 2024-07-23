@@ -1,0 +1,247 @@
+use crate::queue::{Task, WorkQueue};
+use digest::consts::U32;
+use sha2::digest::generic_array::GenericArray;
+use sha2::{Digest, Sha256};
+use std::fmt::Write;
+use std::sync;
+
+
+type Hash = GenericArray<u8, U32>;
+
+#[derive(Debug, Clone)]
+pub struct Block {
+    pub prev_hash: Hash,
+    pub generation: u64,
+    pub difficulty: u8,
+    pub data: String,
+    pub proof: Option<u64>,
+}
+
+impl Block {
+    pub fn initial(difficulty: u8) -> Block {
+        let prev_hash = Hash::default();
+        let generation = 0;
+        let data = String::new();
+        let proof = Some(0);
+        Block {
+            prev_hash,
+            generation,
+            difficulty,
+            data,
+            proof,
+        }
+    }
+
+    pub fn next(previous: &Block, data: String) -> Block {
+        let prev_hash = previous.hash();
+        let generation = previous.generation + 1;
+        let difficulty = previous.difficulty;
+        let proof = Some(0);
+        Block {
+            prev_hash,
+            generation,
+            difficulty,
+            data,
+            proof,
+        }
+    }
+
+    pub fn hash_string_for_proof(&self, proof: u64) -> String {
+        // let mut output = String::new();
+        // write!(&mut output, "{:02x}:{:}:{:}:{:}:{:}", self.prev_hash, self.generation, self.difficulty, self.data, proof).unwrap();
+        // output
+
+
+        let mut output = String::new();
+        write!(&mut output, "{:02x}:", self.prev_hash).unwrap();
+        write!(&mut output, "{}:", self.generation).unwrap();
+        write!(&mut output, "{}:", self.difficulty).unwrap();
+        write!(&mut output, "{}:", self.data).unwrap();
+        write!(&mut output, "{}", proof).unwrap();
+        output
+
+        // let mut data = String::new();
+        // for byte in &self.prev_hash {
+        //     write!(&mut data, "{:02x}", byte).unwrap();
+        // }
+        // write!(
+        //     &mut data,
+        //     ":{:}:{:}:{:}:{:}",
+        //     self.generation,
+        //     self.difficulty,
+        //     self.data,
+        //     proof
+        // )
+        // .unwrap();
+
+        // let mut hasher = Sha256::new();
+        // hasher.update(data.as_bytes());
+        // let hash = hasher.finalize();
+
+        // let mut output = String::new();
+        // for byte in &hash {
+        //     write!(&mut output, "{:02x}", byte).unwrap();
+        // }
+        // output
+    }
+
+    pub fn hash_string(&self) -> String {
+        // self.proof.unwrap() panics if block not mined
+        let p = self.proof.unwrap();
+        self.hash_string_for_proof(p)
+    }
+
+    pub fn hash_for_proof(&self, proof: u64) -> Hash {
+        // let mut output = String::new();
+        // write!(&mut output, "{:02x}:{:}:{:}:{:}:{:}", self.prev_hash, self.generation, self.difficulty, self.data, proof).unwrap();
+        // let hash = Sha256::digest(output.as_bytes());
+        // hash
+
+        // let mut data = String::new();
+        // for byte in &self.prev_hash {
+        //     write!(&mut data, "{:02x}", byte).unwrap();
+        // }
+        // write!(
+        //     &mut data,
+        //     ":{:}:{:}:{:}:{:}",
+        //     self.generation,
+        //     self.difficulty,
+        //     self.data,
+        //     proof
+        // )
+        // .unwrap();
+
+        let hashStr = self.hash_string_for_proof(proof);
+        let mut hasher = Sha256::new();
+        hasher.update(hashStr.as_bytes());
+        hasher.finalize()
+    }
+    
+
+    pub fn hash(&self) -> Hash {
+        // self.proof.unwrap() panics if block not mined
+        let p = self.proof.unwrap();
+        self.hash_for_proof(p)
+    }
+
+    pub fn set_proof(&mut self, proof: u64) {
+        self.proof = Some(proof);
+    }
+
+    pub fn is_valid_for_proof(&self, proof: u64) -> bool {
+        let hash = self.hash_for_proof(proof);
+        let n_bytes = self.difficulty / 8;
+        let n_bits = self.difficulty % 8;
+        for i in 0..n_bytes as usize {
+            if hash[i] != 0 {
+                return false;
+            }
+        }
+        if n_bits > 0 && hash[n_bytes as usize] >= 1 << (8 - n_bits) {
+            return false;
+        }
+        true
+    }
+
+    pub fn is_valid(&self) -> bool {
+        if self.proof.is_none() {
+            return false;
+        }
+        self.is_valid_for_proof(self.proof.unwrap())
+    }
+
+    pub fn mine_serial(&mut self) {
+        let mut p = 0u64;
+        while !self.is_valid_for_proof(p) {
+            p += 1;
+        }
+        self.proof = Some(p);
+    }
+
+    pub fn mine_range(&self, workers: usize, start: u64, end: u64, chunks: u64) -> Option<u64> {
+        let range_size = (end - start + 1) / chunks;
+        let mut work_queue = WorkQueue::new(workers);
+
+        // Create mining tasks and enqueue them in the work queue
+        for chunk in 0..chunks {
+            let chunk_start = start + chunk * range_size;
+            let chunk_end = start + (chunk + 1) * range_size - 1;
+            let task = MiningTask::new(sync::Arc::new(self.clone()), chunk_start, chunk_end);
+            work_queue.enqueue(task).expect("Failed to enqueue mining task.");
+        }
+
+        // Dequeue the results and return the first valid proof found
+        for _ in 0..chunks {
+            if let Some(proof) = work_queue.recv() {
+                return Some(proof);
+            }
+        }
+
+        None
+
+    }
+
+    pub fn mine_for_proof(&self, workers: usize) -> Option<u64> {
+        let range_start: u64 = 0;
+        let range_end: u64 = 8 * (1 << self.difficulty); // 8 * 2^(bits that must be zero)
+        let chunks: u64 = 2345;
+        self.mine_range(workers, range_start, range_end, chunks)
+        
+        // let fixed_proof_value = 12345;
+
+        // if self.is_valid_for_proof(fixed_proof_value) {
+        //     Some(fixed_proof_value)
+        // } else {
+        //     None
+        // }
+    }
+
+    pub fn mine(&mut self, workers: usize) {
+        // self.proof = Some(self.mine_for_proof(workers));
+        // if let Some(proof) = self.mine_for_proof(workers) {
+        //     self.proof = Some(proof);
+        // }
+            
+        // let fixed_proof_value = 54321;
+        // self.set_proof(fixed_proof_value);
+
+        // WHAT I HAD
+        if let Some(proof) = self.mine_for_proof(workers) {
+            self.set_proof(proof);
+        }
+    }
+}
+
+// fn hex_digit(digit: u8) -> u8 {
+//     match digit {
+//         0..=9 => b'0' + digit,
+//         10..=15 => b'a' + (digit - 10),
+//         _ => unreachable!(),
+//     }
+// }
+
+struct MiningTask {
+    block: sync::Arc<Block>,
+    start: u64,
+    end: u64,
+}
+
+impl MiningTask {
+    fn new(block: sync::Arc<Block>, start: u64, end: u64) -> MiningTask {
+        MiningTask { block, start, end }
+    }
+}
+
+impl Task for MiningTask {
+    type Output = Option<u64>;
+
+    fn run(&self) -> Option<Option<u64>> {
+        for p in self.start..=self.end {
+            if self.block.is_valid_for_proof(p) {
+                return Some(Some(p));
+            }
+        }
+        Some(None)
+    }
+}
+
